@@ -12,10 +12,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/**
- * Envía mensajes a Discord mediante webhooks.
- * Todas las peticiones son asíncronas para no bloquear el hilo principal.
- */
 public final class DiscordWebhook {
 
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
@@ -28,13 +24,13 @@ public final class DiscordWebhook {
 
     // ── Métodos públicos ──────────────────────────────────────────────────────
 
-    public static void sendSpawn(String webhookUrl, String species, String biome,
-                                  int x, int y, int z) {
+    public static void sendSpawn(String webhookUrl, String species, String biome, int x, int y, int z) {
         JsonObject embed = buildEmbed(
                 "✨ ¡Legendario aparecido!",
                 String.format("**%s** ha aparecido en el bioma `%s`\nCoordenadas: `%d, %d, %d`",
                         capitalize(species), biome, x, y, z),
-                0xFFD700 // dorado
+                0xFFD700, // dorado
+                species   // Pasamos la especie para la imagen
         );
         sendAsync(webhookUrl, embed);
     }
@@ -44,7 +40,8 @@ public final class DiscordWebhook {
                 "🎉 ¡Legendario capturado!",
                 String.format("**%s** ha sido capturado por **%s**.",
                         capitalize(species), playerName),
-                0x00BFFF // azul
+                0x00BFFF, // azul
+                species   // Pasamos la especie para la imagen
         );
         sendAsync(webhookUrl, embed);
     }
@@ -53,22 +50,37 @@ public final class DiscordWebhook {
         JsonObject embed = buildEmbed(
                 "💨 Legendario despawneado",
                 String.format("**%s** ha desaparecido. Motivo: %s", capitalize(species), reason),
-                0x808080 // gris
+                0x808080, // gris
+                species   // Pasamos la especie para la imagen
         );
         sendAsync(webhookUrl, embed);
     }
 
     // ── Internos ──────────────────────────────────────────────────────────────
 
-    private static JsonObject buildEmbed(String title, String description, int color) {
+    // 👇 SE ACTUALIZÓ PARA RECIBIR LA "species" 👇
+    private static JsonObject buildEmbed(String title, String description, int color, String species) {
         JsonObject embed = new JsonObject();
         embed.addProperty("title",       title);
         embed.addProperty("description", description);
         embed.addProperty("color",       color);
 
+        // 👇 AQUÍ ESTÁ LA MAGIA PARA LA IMAGEN 👇
+        if (species != null && !species.isEmpty()) {
+            JsonObject thumbnail = new JsonObject();
+            
+            // Formatear el nombre por si tiene guiones bajos (ej. "ho_oh" -> "ho-oh")
+            // PokemonDB usa guiones normales para las URLs.
+            String formattedSpecies = species.toLowerCase().replace("_", "-").replace(" ", "-");
+            
+            // Usamos la misma base de datos de imágenes que el mod GTS
+            thumbnail.addProperty("url", "https://img.pokemondb.net/sprites/home/normal/" + formattedSpecies + ".png");
+            
+            embed.add("thumbnail", thumbnail);
+        }
+
         // Timestamp ISO 8601
-        embed.addProperty("timestamp",
-                java.time.Instant.now().toString());
+        embed.addProperty("timestamp", java.time.Instant.now().toString());
 
         JsonObject footer = new JsonObject();
         footer.addProperty("text", "LegendarySpawner");
@@ -80,9 +92,6 @@ public final class DiscordWebhook {
         EXECUTOR.submit(() -> sendDiscordWebhook(webhookUrl, embed));
     }
 
-    /**
-     * Realiza la petición HTTP al webhook de Discord.
-     */
     public static void sendDiscordWebhook(String webhookUrl, JsonObject embed) {
         try {
             JsonArray embeds = new JsonArray();
@@ -97,12 +106,8 @@ public final class DiscordWebhook {
             con.setRequestMethod("POST");
             con.setDoOutput(true);
             
-            // Tipo de contenido JSON
             con.setRequestProperty("Content-Type", "application/json");
-            
-            // 👇 LA SOLUCIÓN: Identificarse ante Discord para evitar el bloqueo (Error 403)
             con.setRequestProperty("User-Agent", "LegendarySpawner-Mod/1.0");
-
             con.setConnectTimeout(5_000);
             con.setReadTimeout(5_000);
 
@@ -112,10 +117,9 @@ public final class DiscordWebhook {
 
             int code = con.getResponseCode();
             if (code == 429) {
-                LegendarySpawnerMod.LOGGER.warn("[LegendarySpawner] Discord Rate Limit excedido (Error 429). Demasiadas peticiones enviadas rápido.");
+                LegendarySpawnerMod.LOGGER.warn("[LegendarySpawner] Discord Rate Limit excedido (Error 429).");
             } else if (code < 200 || code >= 300) {
-                LegendarySpawnerMod.LOGGER.warn(
-                        "[LegendarySpawner] Discord webhook respondió con código {}", code);
+                LegendarySpawnerMod.LOGGER.warn("[LegendarySpawner] Discord webhook respondió con código {}", code);
             }
             con.disconnect();
         } catch (Exception e) {
@@ -123,9 +127,6 @@ public final class DiscordWebhook {
         }
     }
 
-    /**
-     * Apaga el ejecutor de forma segura al detener el servidor.
-     */
     public static void shutdown() {
         EXECUTOR.shutdown();
     }
