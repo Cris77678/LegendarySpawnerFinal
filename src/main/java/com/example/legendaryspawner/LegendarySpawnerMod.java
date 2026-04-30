@@ -65,24 +65,52 @@ public class LegendarySpawnerMod implements ModInitializer {
     }
 
     private void registerCobblemonEvents() {
+        // Bloquear spawns naturales
         CobblemonEvents.POKEMON_ENTITY_SPAWN.subscribe(event -> {
             PokemonEntity entity = event.getEntity();
             Pokemon pokemon = entity.getPokemon();
 
             if (wasSpawnedByMod(entity.getUuid())) {
-                return;
+                return kotlin.Unit.INSTANCE;
             }
 
             if (isLegendaryCategory(pokemon)) {
                 event.cancel();
                 LOGGER.debug("[LegendarySpawner] Spawn natural bloqueado: {}", pokemon.getSpecies().getName());
             }
+            return kotlin.Unit.INSTANCE;
         });
 
+        // Evento de Captura
         CobblemonEvents.POKEMON_CAPTURED.subscribe(event -> {
             if (activeManager != null) {
                 activeManager.handleCapture(event.getPokemon(), event.getPlayer());
             }
+
+            // 👇 NUEVO: Enviar Webhook de captura y remover rastro 👇
+            if (wasSpawnedByMod(event.getPokemon().getUuid())) {
+                String species = event.getPokemon().getSpecies().getName();
+                String playerName = event.getPlayer().getName().getString();
+                
+                if (config.discordEnabled && !config.discordWebhookUrl.isEmpty()) {
+                    DiscordWebhook.sendCapture(config.discordWebhookUrl, species, playerName);
+                }
+                unmarkSpawnedByMod(event.getPokemon().getUuid());
+            }
+            return kotlin.Unit.INSTANCE;
+        });
+
+        // 👇 NUEVO: Evento cuando el legendario es derrotado (Fainted) 👇
+        CobblemonEvents.POKEMON_FAINTED.subscribe(event -> {
+            if (wasSpawnedByMod(event.getPokemon().getUuid())) {
+                String species = event.getPokemon().getSpecies().getName();
+                
+                if (config.discordEnabled && !config.discordWebhookUrl.isEmpty()) {
+                    DiscordWebhook.sendDespawn(config.discordWebhookUrl, species, "Fue derrotado en combate.");
+                }
+                unmarkSpawnedByMod(event.getPokemon().getUuid());
+            }
+            return kotlin.Unit.INSTANCE;
         });
     }
 
