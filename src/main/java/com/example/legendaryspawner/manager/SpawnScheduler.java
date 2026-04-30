@@ -5,6 +5,8 @@ import com.example.legendaryspawner.LegendarySpawnerMod;
 import com.example.legendaryspawner.config.LegendaryConfig;
 import com.example.legendaryspawner.util.MessageUtil;
 import com.example.legendaryspawner.webhook.DiscordWebhook;
+import com.google.gson.Gson;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.entity.boss.BossBar;
 import net.minecraft.entity.boss.ServerBossBar;
 import net.minecraft.registry.RegistryKey;
@@ -15,6 +17,10 @@ import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.biome.Biome;
 
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -41,6 +47,15 @@ public class SpawnScheduler {
     private ServerBossBar bossBar;
     private long nextSpawnTimeMs;
 
+    // Variables para guardar el estado del timer
+    private static final Path STATE_DIR = FabricLoader.getInstance().getConfigDir().resolve("legendaryspawner");
+    private static final Path SCHEDULER_FILE = STATE_DIR.resolve("scheduler_state.json");
+    private static final Gson GSON = new Gson().newBuilder().create();
+
+    private static class SchedulerState {
+        long savedNextSpawnTimeMs;
+    }
+
     public SpawnScheduler(MinecraftServer server, LegendaryConfig config,
                           ActiveLegendaryManager activeManager, AuditLogger auditLogger) {
         this.server        = server;
@@ -61,7 +76,8 @@ public class SpawnScheduler {
         // Inicializar la BossBar visual
         bossBar = new ServerBossBar(Text.literal(""), BossBar.Color.YELLOW, BossBar.Style.PROGRESS);
         
-        scheduleNext();
+        // Cargar el estado guardado en lugar de reiniciar el tiempo
+        loadTimerState();
         
         // Ejecutar un tick cada 1 segundo exacto
         currentTask = timer.scheduleAtFixedRate(() -> {
@@ -78,7 +94,11 @@ public class SpawnScheduler {
         if (currentTask != null) currentTask.cancel(false);
         if (bossBar != null) bossBar.clearPlayers();
         timer.shutdownNow();
-        LegendarySpawnerMod.LOGGER.info("[LegendarySpawner] Scheduler detenido.");
+        
+        // Guardar el tiempo exacto al apagar el servidor
+        saveTimerState();
+        
+        LegendarySpawnerMod.LOGGER.info("[LegendarySpawner] Scheduler detenido y timer guardado.");
     }
 
     public void reschedule() {
@@ -96,6 +116,46 @@ public class SpawnScheduler {
     public void scheduleNext() {
         // Calcular el momento exacto en el futuro usando el intervalo de tu config.json
         nextSpawnTimeMs = System.currentTimeMillis() + (config.intervalMinutes * 60_000L);
+    }
+
+    // ── Persistencia del Timer ────────────────────────────────────────────────
+
+    private void loadTimerState() {
+        if (Files.exists(SCHEDULER_FILE)) {
+            try (Reader r = Files.newBufferedReader(SCHEDULER_FILE)) {
+                SchedulerState state = GSON.fromJson(r, SchedulerState.class);
+                if (state != null) {
+                    long now = System.currentTimeMillis();
+                    // Si el tiempo guardado aún está en el futuro, lo restauramos
+                    if (state.savedNextSpawnTimeMs > now) {
+                        this.nextSpawnTimeMs = state.savedNextSpawnTimeMs;
+                        LegendarySpawnerMod.LOGGER.info("[LegendarySpawner] Timer restaurado correctamente.");
+                        return;
+                    } else {
+                        LegendarySpawnerMod.LOGGER.info("[LegendarySpawner] El tiempo del timer pasó mientras el servidor estaba apagado. Intentando spawn...");
+                        // Opcional: forzar un intento inmediato si el tiempo pasó estando apagado
+                        attemptSpawn(); 
+                    }
+                }
+            } catch (Exception e) {
+                LegendarySpawnerMod.LOGGER.error("[LegendarySpawner] Error cargando el estado del timer", e);
+            }
+        }
+        // Si no hay archivo o hubo error, programamos un tiempo nuevo normal
+        scheduleNext();
+    }
+
+    private void saveTimerState() {
+        try {
+            Files.createDirectories(STATE_DIR);
+            SchedulerState state = new SchedulerState();
+            state.savedNextSpawnTimeMs = this.nextSpawnTimeMs;
+            try (Writer w = Files.newBufferedWriter(SCHEDULER_FILE)) {
+                GSON.toJson(state, w);
+            }
+        } catch (Exception e) {
+            LegendarySpawnerMod.LOGGER.error("[LegendarySpawner] Error guardando el estado del timer", e);
+        }
     }
 
     // ── Lógica de Tiempo y BossBar ────────────────────────────────────────────
